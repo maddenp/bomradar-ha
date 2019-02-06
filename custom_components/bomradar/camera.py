@@ -106,7 +106,10 @@ class BOMRadarCamera(Camera):
         return 1
 
     def camera_image(self):
-        return self.get_loop()
+        now = int(time.time())
+        delta = radars[self.location]['delta']
+        start = now - (now % delta)
+        return self.get_loop(start)
         
     @functools.lru_cache(maxsize=1)
     def get_background(self, start):
@@ -200,7 +203,7 @@ class BOMRadarCamera(Camera):
         return self.get_image(url)
 
     @functools.lru_cache(maxsize=1)
-    def get_loop(self):
+    def get_loop(self, start):
 
         '''
         Return an animated GIF comprising a set of frames, where each frame
@@ -209,16 +212,12 @@ class BOMRadarCamera(Camera):
         caching.
         '''
 
-        now = int(time.time())
-        delta = radars[self.location]['delta']
-        start = now - (now % delta)
         log('Getting loop for %s at %s' % (self.location, start))
         loop = io.BytesIO()
-        frames = self.get_frames(start)
-        if frames is None:
-            log('Got NO frames for %s at %s' % (self.location, start))
-            Image.new('RGB', (340, 370)).save(loop, format='GIF')
-        else:
+        try:
+            frames = self.get_frames(start)
+            if frames is None:
+                raise
             log('Got %s frames for %s at %s' % (
                 len(frames),
                 self.location,
@@ -232,6 +231,9 @@ class BOMRadarCamera(Camera):
                 loop=0,
                 save_all=True,
             )
+        except:
+            log('Got NO frames for %s at %s' % (self.location, start))
+            Image.new('RGB', (340, 370)).save(loop, format='GIF')
         return loop.getvalue()
 
     def get_time_strs(self, start):

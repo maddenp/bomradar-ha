@@ -6,13 +6,15 @@ import multiprocessing.dummy
 import time
 
 from homeassistant.components.camera import PLATFORM_SCHEMA, Camera
+from homeassistant.helpers import config_validation as cv
 from PIL import Image
-from voluptuous import All, In, Required
+from voluptuous import All, In, Optional, Required
 import requests
 
 _LOGGER = logging.getLogger(__name__)
 
 CONF_LOC = 'location'
+CONF_NAME = 'name'
 
 radars = {
     'Adelaide':        {'id': '643', 'delta': 360, 'frames': 6},
@@ -78,7 +80,8 @@ LOCS = sorted(radars.keys())
 ERRMSG = "Set 'location' to one of: %s" % ', '.join(LOCS)
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    Required(CONF_LOC): All(In(LOCS), msg=ERRMSG)
+    Required(CONF_LOC): All(In(LOCS), msg=ERRMSG),
+    Optional(CONF_NAME): cv.string,
 })
 
 REQUIREMENTS = ['Pillow==5.4.1']
@@ -90,16 +93,18 @@ def log(msg):
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     location = config.get(CONF_LOC)
-    camera = BOMRadarCamera(hass, location)
-    add_devices([camera])
+    name = config.get(CONF_NAME) or 'BOM Radar Loop - %s' % location
+    bomradarloop = BOMRadarLoop(hass, location, name)
+    add_devices([bomradarloop])
 
 
-class BOMRadarCamera(Camera):
+class BOMRadarLoop(Camera):
 
-    def __init__(self, hass, location):
+    def __init__(self, hass, location, name):
         super().__init__()
         self.hass = hass
-        self.location = location
+        self._location = location
+        self._name = name
         self.camera_image()
 
     def __hash__(self):
@@ -107,7 +112,7 @@ class BOMRadarCamera(Camera):
 
     def camera_image(self):
         now = int(time.time())
-        delta = radars[self.location]['delta']
+        delta = radars[self._location]['delta']
         start = now - (now % delta)
         return self.get_loop(start)
         
@@ -122,15 +127,15 @@ class BOMRadarCamera(Camera):
         missing layers) will be replaced in the next interval.
         '''
 
-        log('Getting background for %s at %s' % (self.location, start))
-        radar_id = radars[self.location]['id']
+        log('Getting background for %s at %s' % (self._location, start))
+        radar_id = radars[self._location]['id']
         suffix = 'products/radar_transparencies/IDR%s.background.png'
         url = self.get_url(suffix % radar_id)
         background = self.get_image(url)
         if background is None:
             return None
         for layer in ('topography', 'locations', 'range'):
-            log('Getting %s for %s at %s' % (layer, self.location, start))
+            log('Getting %s for %s at %s' % (layer, self._location, start))
             suffix = 'products/radar_transparencies/IDR%s.%s.png' % (
                 radar_id,
                 layer
@@ -156,9 +161,9 @@ class BOMRadarCamera(Camera):
         that.
         '''
 
-        log('Getting frames for %s at %s' % (self.location, start))
+        log('Getting frames for %s at %s' % (self._location, start))
         fn_get = lambda time_str: self.get_wximg(time_str)
-        frames = radars[self.location]['frames']
+        frames = radars[self._location]['frames']
         pool0 = multiprocessing.dummy.Pool(frames)
         raw = pool0.map(fn_get, self.get_time_strs(start))
         wximages = [x for x in raw if x is not None]
@@ -212,7 +217,7 @@ class BOMRadarCamera(Camera):
         caching.
         '''
 
-        log('Getting loop for %s at %s' % (self.location, start))
+        log('Getting loop for %s at %s' % (self._location, start))
         loop = io.BytesIO()
         try:
             frames = self.get_frames(start)
@@ -220,7 +225,7 @@ class BOMRadarCamera(Camera):
                 raise
             log('Got %s frames for %s at %s' % (
                 len(frames),
-                self.location,
+                self._location,
                 start
             ))
             frames[0].save(
@@ -232,7 +237,7 @@ class BOMRadarCamera(Camera):
                 save_all=True,
             )
         except:
-            log('Got NO frames for %s at %s' % (self.location, start))
+            log('Got NO frames for %s at %s' % (self._location, start))
             Image.new('RGB', (340, 370)).save(loop, format='GIF')
         return loop.getvalue()
 
@@ -244,10 +249,10 @@ class BOMRadarCamera(Camera):
         '''
 
         log('Getting time strings starting at %s' % start)
-        delta = radars[self.location]['delta']
+        delta = radars[self._location]['delta']
         tz = dt.timezone.utc
         mkdt = lambda n: dt.datetime.fromtimestamp(start - (delta * n), tz=tz)
-        frames = radars[self.location]['frames']
+        frames = radars[self._location]['frames']
         return [mkdt(n).strftime('%Y%m%d%H%M') for n in range(frames, 0, -1)]
 
     def get_url(self, path):
@@ -268,11 +273,11 @@ class BOMRadarCamera(Camera):
         caller must deal with that possibility.
         '''
 
-        log('Getting radar imagery for %s at %s' % (self.location, time_str))
-        radar_id = radars[self.location]['id']
+        log('Getting radar imagery for %s at %s' % (self._location, time_str))
+        radar_id = radars[self._location]['id']
         url = self.get_url('/radar/IDR%s.T.%s.png' % (radar_id, time_str))
         return self.get_image(url)
 
     @property
     def name(self):
-        return 'BOM Radar Loop'
+        return self._name

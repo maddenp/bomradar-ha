@@ -14,7 +14,7 @@ import requests
 _LOGGER = logging.getLogger(__name__)
 
 CONF_LOC = 'location'
-CONF_LOC = 'name'
+CONF_NAME = 'name'
 
 radars = {
     'Adelaide':        {'id': '643', 'delta': 360, 'frames': 6},

@@ -1,5 +1,4 @@
 import datetime as dt
-import functools
 import io
 import logging
 import multiprocessing.dummy
@@ -105,29 +104,27 @@ class BOMRadarLoop(Camera):
         self.hass = hass
         self._location = location
         self._name = name
-        self.camera_image()
-
-    def __hash__(self):
-        return 1
+        self.t0 = 0
+        self.loop = None
 
     def camera_image(self):
         now = int(time.time())
         delta = radars[self._location]['delta']
-        start = now - (now % delta)
-        return self.get_loop(start)
+        t1 = now - (now % delta)
+        if t1 > self.t0:
+            self.t0 = t1
+            self.loop = self.get_loop()
+        return self.loop
         
-    @functools.lru_cache(maxsize=1)
-    def get_background(self, start):
+    def get_background(self):
 
         '''
         Fetch the background map, then the topography, locations (e.g. city
         names), and distance-from-radar range markings, and merge into a single
-        image. Cache one image per location, but also consider the 'start'
-        value when caching so that bad background images (e.g. with one or more
-        missing layers) will be replaced in the next interval.
+        image.
         '''
 
-        log('Getting background for %s at %s' % (self._location, start))
+        log('Getting background for %s at %s' % (self._location, self.t0))
         radar_id = radars[self._location]['id']
         suffix = 'products/radar_transparencies/IDR%s.background.png'
         url = self.get_url(suffix % radar_id)
@@ -135,7 +132,7 @@ class BOMRadarLoop(Camera):
         if background is None:
             return None
         for layer in ('topography', 'locations', 'range'):
-            log('Getting %s for %s at %s' % (layer, self._location, start))
+            log('Getting %s for %s at %s' % (layer, self._location, self.t0))
             suffix = 'products/radar_transparencies/IDR%s.%s.png' % (
                 radar_id,
                 layer
@@ -146,7 +143,7 @@ class BOMRadarLoop(Camera):
                 background = Image.alpha_composite(background, image)
         return background
 
-    def get_frames(self, start):
+    def get_frames(self):
 
         '''
         Use a thread pool to fetch a set of current radar images in parallel,
@@ -161,21 +158,21 @@ class BOMRadarLoop(Camera):
         that.
         '''
 
-        log('Getting frames for %s at %s' % (self._location, start))
+        log('Getting frames for %s at %s' % (self._location, self.t0))
         fn_get = lambda time_str: self.get_wximg(time_str)
         frames = radars[self._location]['frames']
         pool0 = multiprocessing.dummy.Pool(frames)
-        raw = pool0.map(fn_get, self.get_time_strs(start))
+        raw = pool0.map(fn_get, self.get_time_strs())
         wximages = [x for x in raw if x is not None]
         if not wximages:
             return None
         pool1 = multiprocessing.dummy.Pool(len(wximages))
-        background = self.get_background(start)
+        background = self.get_background()
         if background is None:
             return None
         fn_composite = lambda x: Image.alpha_composite(background, x)
         composites = pool1.map(fn_composite, wximages)
-        legend = self.get_legend(start)
+        legend = self.get_legend()
         if legend is None:
             return None
         loop_frames = pool1.map(lambda _: legend.copy(), composites)
@@ -195,38 +192,34 @@ class BOMRadarLoop(Camera):
             return Image.open(io.BytesIO(response.content)).convert('RGBA')
         return None
 
-    @functools.lru_cache(maxsize=1)
-    def get_legend(self, start):
+    def get_legend(self):
 
         '''
-        Fetch the BOM colorbar legend image. See comment in get_background()
-        in re: caching.
+        Fetch the BOM colorbar legend image.
         '''
 
-        log('Getting legend at %s' % start)
+        log('Getting legend at %s' % self.t0)
         url = self.get_url('products/radar_transparencies/IDR.legend.0.png')
         return self.get_image(url)
 
-    @functools.lru_cache(maxsize=1)
-    def get_loop(self, start):
+    def get_loop(self):
 
         '''
         Return an animated GIF comprising a set of frames, where each frame
         includes a background, one or more supplemental layers, a colorbar
-        legend, and a radar image. See comment in get_background() in re:
-        caching.
+        legend, and a radar image.
         '''
 
-        log('Getting loop for %s at %s' % (self._location, start))
+        log('Getting loop for %s at %s' % (self._location, self.t0))
         loop = io.BytesIO()
         try:
-            frames = self.get_frames(start)
+            frames = self.get_frames()
             if frames is None:
                 raise
             log('Got %s frames for %s at %s' % (
                 len(frames),
                 self._location,
-                start
+                self.t0
             ))
             frames[0].save(
                 loop,
@@ -237,21 +230,21 @@ class BOMRadarLoop(Camera):
                 save_all=True,
             )
         except:
-            log('Got NO frames for %s at %s' % (self._location, start))
+            log('Got NO frames for %s at %s' % (self._location, self.t0))
             Image.new('RGB', (340, 370)).save(loop, format='GIF')
         return loop.getvalue()
 
-    def get_time_strs(self, start):
+    def get_time_strs(self):
 
         '''
         Return a list of strings representing YYYYMMDDHHMM times for the most
         recent set of radar images to be used to create the animated GIF.
         '''
 
-        log('Getting time strings starting at %s' % start)
+        log('Getting time strings starting at %s' % self.t0)
         delta = radars[self._location]['delta']
         tz = dt.timezone.utc
-        mkdt = lambda n: dt.datetime.fromtimestamp(start - (delta * n), tz=tz)
+        mkdt = lambda n: dt.datetime.fromtimestamp(self.t0 - (delta * n), tz=tz)
         frames = radars[self._location]['frames']
         return [mkdt(n).strftime('%Y%m%d%H%M') for n in range(frames, 0, -1)]
 
@@ -264,7 +257,6 @@ class BOMRadarLoop(Camera):
         log('Getting URL for path %s' % path)
         return 'http://www.bom.gov.au/%s' % path
 
-    @functools.lru_cache(maxsize=max(x['frames'] for x in radars.values()))
     def get_wximg(self, time_str):
 
         '''

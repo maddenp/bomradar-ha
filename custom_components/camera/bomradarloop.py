@@ -110,8 +110,8 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     location = config.get(CONF_LOC)
     if location:
         radar_id = radars[location]['id']
-        delta = radars[location]['delta']
-        frames = radars[location]['frames']
+        delta = config.get(CONF_DELTA) or radars[location]['delta']
+        frames = config.get(CONF_FRAMES) or radars[location]['frames']
     else:
         radar_id = config.get(CONF_ID)
         delta = config.get(CONF_DELTA)

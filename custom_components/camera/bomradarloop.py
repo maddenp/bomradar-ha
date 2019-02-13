@@ -7,11 +7,14 @@ import time
 from homeassistant.components.camera import PLATFORM_SCHEMA, Camera
 from homeassistant.helpers import config_validation as cv
 from PIL import Image
-from voluptuous import All, In, Optional, Required
+from voluptuous import All, In, Invalid, Optional
 import requests
 
 _LOGGER = logging.getLogger(__name__)
 
+CONF_DELTA = 'delta'
+CONF_FRAMES = 'frames'
+CONF_ID = 'id'
 CONF_LOC = 'location'
 CONF_NAME = 'name'
 
@@ -76,10 +79,13 @@ radars = {
 
 LOCS = sorted(radars.keys())
 
-ERRMSG = "Set 'location' to one of: %s" % ', '.join(LOCS)
+BADLOC = "Set 'location' to one of: %s" % ', '.join(LOCS)
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    Required(CONF_LOC): All(In(LOCS), msg=ERRMSG),
+    Optional(CONF_LOC): All(In(LOCS), msg=BADLOC),
+    Optional(CONF_DELTA): cv.positive_int,
+    Optional(CONF_FRAMES): cv.positive_int,
+    Optional(CONF_ID): cv.positive_int,
     Optional(CONF_NAME): cv.string,
 })
 
@@ -87,32 +93,45 @@ REQUIREMENTS = ['Pillow==5.4.1']
 
 
 def log(msg):
-    _LOGGER.debug(msg)
+#     _LOGGER.debug(msg)
+    _LOGGER.info(msg)
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     location = config.get(CONF_LOC)
+    if location:
+        radar = radars[location]
+        radar_id = radar['id']
+        delta = radar['delta']
+        frames = radar['frames']
+    else:
+        radar_id = config.get(CONF_ID)
+        delta = config.get(CONF_DELTA)
+        frames = config.get(CONF_FRAMES)
+        location = 'ID %s' % radar_id
     name = config.get(CONF_NAME) or 'BOM Radar Loop - %s' % location
-    bomradarloop = BOMRadarLoop(hass, location, name)
+    bomradarloop = BOMRadarLoop(hass, location, delta, frames, radar_id, name)
     add_devices([bomradarloop])
 
 
 class BOMRadarLoop(Camera):
 
-    def __init__(self, hass, location, name):
+    def __init__(self, hass, location, delta, frames, radar_id, name):
         super().__init__()
         self.hass = hass
         self._location = location
+        self._delta = delta
+        self._frames = frames
+        self._radar_id = radar_id
         self._name = name
-        self.t0 = 0
+        self._t0 = 0
         self.loop = None
 
     def camera_image(self):
         now = int(time.time())
-        delta = radars[self._location]['delta']
-        t1 = now - (now % delta)
-        if t1 > self.t0:
-            self.t0 = t1
+        t1 = now - (now % self._delta)
+        if t1 > self._t0:
+            self._t0 = t1
             self.loop = self.get_loop()
         return self.loop
         
@@ -124,17 +143,16 @@ class BOMRadarLoop(Camera):
         image.
         '''
 
-        log('Getting background for %s at %s' % (self._location, self.t0))
-        radar_id = radars[self._location]['id']
+        log('Getting background for %s at %s' % (self._location, self._t0))
         suffix = 'products/radar_transparencies/IDR%s.background.png'
-        url = self.get_url(suffix % radar_id)
+        url = self.get_url(suffix % self._radar_id)
         background = self.get_image(url)
         if background is None:
             return None
         for layer in ('topography', 'locations', 'range'):
-            log('Getting %s for %s at %s' % (layer, self._location, self.t0))
+            log('Getting %s for %s at %s' % (layer, self._location, self._t0))
             suffix = 'products/radar_transparencies/IDR%s.%s.png' % (
-                radar_id,
+                self._radar_id,
                 layer
             )
             url = self.get_url(suffix)
@@ -158,10 +176,9 @@ class BOMRadarLoop(Camera):
         that.
         '''
 
-        log('Getting frames for %s at %s' % (self._location, self.t0))
+        log('Getting frames for %s at %s' % (self._location, self._t0))
         fn_get = lambda time_str: self.get_wximg(time_str)
-        frames = radars[self._location]['frames']
-        pool0 = multiprocessing.dummy.Pool(frames)
+        pool0 = multiprocessing.dummy.Pool(self._frames)
         raw = pool0.map(fn_get, self.get_time_strs())
         wximages = [x for x in raw if x is not None]
         if not wximages:
@@ -198,7 +215,7 @@ class BOMRadarLoop(Camera):
         Fetch the BOM colorbar legend image.
         '''
 
-        log('Getting legend at %s' % self.t0)
+        log('Getting legend at %s' % self._t0)
         url = self.get_url('products/radar_transparencies/IDR.legend.0.png')
         return self.get_image(url)
 
@@ -210,7 +227,7 @@ class BOMRadarLoop(Camera):
         legend, and a radar image.
         '''
 
-        log('Getting loop for %s at %s' % (self._location, self.t0))
+        log('Getting loop for %s at %s' % (self._location, self._t0))
         loop = io.BytesIO()
         try:
             frames = self.get_frames()
@@ -219,7 +236,7 @@ class BOMRadarLoop(Camera):
             log('Got %s frames for %s at %s' % (
                 len(frames),
                 self._location,
-                self.t0
+                self._t0
             ))
             frames[0].save(
                 loop,
@@ -230,7 +247,7 @@ class BOMRadarLoop(Camera):
                 save_all=True,
             )
         except:
-            log('Got NO frames for %s at %s' % (self._location, self.t0))
+            log('Got NO frames for %s at %s' % (self._location, self._t0))
             Image.new('RGB', (340, 370)).save(loop, format='GIF')
         return loop.getvalue()
 
@@ -241,12 +258,14 @@ class BOMRadarLoop(Camera):
         recent set of radar images to be used to create the animated GIF.
         '''
 
-        log('Getting time strings starting at %s' % self.t0)
-        delta = radars[self._location]['delta']
+        log('Getting time strings starting at %s' % self._t0)
         tz = dt.timezone.utc
-        mkdt = lambda n: dt.datetime.fromtimestamp(self.t0 - (delta * n), tz=tz)
-        frames = radars[self._location]['frames']
-        return [mkdt(n).strftime('%Y%m%d%H%M') for n in range(frames, 0, -1)]
+        mkdt = lambda n: dt.datetime.fromtimestamp(
+            self._t0 - (self._delta * n),
+            tz=tz
+        )
+        ns = range(self._frames, 0, -1)
+        return [mkdt(n).strftime('%Y%m%d%H%M') for n in ns]
 
     def get_url(self, path):
 
@@ -266,8 +285,9 @@ class BOMRadarLoop(Camera):
         '''
 
         log('Getting radar imagery for %s at %s' % (self._location, time_str))
-        radar_id = radars[self._location]['id']
-        url = self.get_url('/radar/IDR%s.T.%s.png' % (radar_id, time_str))
+        url = self.get_url(
+            '/radar/IDR%s.T.%s.png' % (self._radar_id, time_str)
+        )
         return self.get_image(url)
 
     @property

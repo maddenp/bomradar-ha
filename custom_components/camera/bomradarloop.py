@@ -6,17 +6,12 @@ import time
 
 from homeassistant.components.camera import PLATFORM_SCHEMA, Camera
 from homeassistant.helpers import config_validation as cv
-from PIL import Image
 from voluptuous import All, In, Invalid, Optional
 import requests
 
-_LOGGER = logging.getLogger(__name__)
+from PIL import Image
 
-CONF_DELTA = 'delta'
-CONF_FRAMES = 'frames'
-CONF_ID = 'id'
-CONF_LOC = 'location'
-CONF_NAME = 'name'
+REQUIREMENTS = ['Pillow==5.4.1']
 
 radars = {
     'Adelaide':        {'id': '643', 'delta': 360, 'frames': 6},
@@ -79,17 +74,34 @@ radars = {
 
 LOCS = sorted(radars.keys())
 
+CONF_DELTA = 'delta'
+CONF_FRAMES = 'frames'
+CONF_ID = 'id'
+CONF_LOC = 'location'
+CONF_NAME = 'name'
+
 BADLOC = "Set 'location' to one of: %s" % ', '.join(LOCS)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+def validate_schema(cfg):
+    msg0 = "Specify either 'id' or 'location', not both"
+    msg1 = "Specify 'id', 'delta' and 'frames' when 'location' is unspecified"
+    if cfg.get('location'):
+        if cfg.get('id'):
+            raise Invalid(msg0)
+    else:
+        if not all([cfg.get('id'), cfg.get('delta'), cfg.get('frames')]):
+            raise Invalid(msg1)
+    return True
+
+PLATFORM_SCHEMA = All(PLATFORM_SCHEMA.extend({
     Optional(CONF_LOC): All(In(LOCS), msg=BADLOC),
     Optional(CONF_DELTA): cv.positive_int,
     Optional(CONF_FRAMES): cv.positive_int,
     Optional(CONF_ID): cv.positive_int,
     Optional(CONF_NAME): cv.string,
-})
+}), validate_schema)
 
-REQUIREMENTS = ['Pillow==5.4.1']
+_LOGGER = logging.getLogger(__name__)
 
 
 def log(msg):
@@ -100,12 +112,11 @@ def log(msg):
 def setup_platform(hass, config, add_devices, discovery_info=None):
     location = config.get(CONF_LOC)
     if location:
-        radar = radars[location]
-        radar_id = radar['id']
-        delta = radar['delta']
-        frames = radar['frames']
+        radar_id = radars[location]['id']
+        delta = radaras[location]['delta']
+        frames = radaras[location]['frames']
     else:
-        radar_id = config.get(CONF_ID)
+        radar_id = conf.get(CONF_ID)
         delta = config.get(CONF_DELTA)
         frames = config.get(CONF_FRAMES)
         location = 'ID %s' % radar_id

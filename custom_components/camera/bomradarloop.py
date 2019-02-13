@@ -113,7 +113,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         delta = radars[location]['delta']
         frames = radars[location]['frames']
     else:
-        radar_id = conf.get(CONF_ID)
+        radar_id = config.get(CONF_ID)
         delta = config.get(CONF_DELTA)
         frames = config.get(CONF_FRAMES)
         location = 'ID %s' % radar_id

@@ -9,8 +9,6 @@ from homeassistant.helpers import config_validation as cv
 from voluptuous import All, In, Invalid, Optional
 import requests
 
-from PIL import Image
-
 REQUIREMENTS = ['Pillow==5.4.1']
 
 radars = {
@@ -91,7 +89,7 @@ def validate_schema(cfg):
     else:
         if not all([cfg.get('id'), cfg.get('delta'), cfg.get('frames')]):
             raise Invalid(msg1)
-    return True
+    return cfg
 
 PLATFORM_SCHEMA = All(PLATFORM_SCHEMA.extend({
     Optional(CONF_LOC): All(In(LOCS), msg=BADLOC),
@@ -113,8 +111,8 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     location = config.get(CONF_LOC)
     if location:
         radar_id = radars[location]['id']
-        delta = radaras[location]['delta']
-        frames = radaras[location]['frames']
+        delta = radars[location]['delta']
+        frames = radars[location]['frames']
     else:
         radar_id = conf.get(CONF_ID)
         delta = config.get(CONF_DELTA)
@@ -128,23 +126,29 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 class BOMRadarLoop(Camera):
 
     def __init__(self, hass, location, delta, frames, radar_id, name):
+
+        from PIL import Image
+
         super().__init__()
+
         self.hass = hass
         self._location = location
         self._delta = delta
         self._frames = frames
         self._radar_id = radar_id
         self._name = name
+
+        self._image = Image
+        self._loop = None
         self._t0 = 0
-        self.loop = None
 
     def camera_image(self):
         now = int(time.time())
         t1 = now - (now % self._delta)
         if t1 > self._t0:
             self._t0 = t1
-            self.loop = self.get_loop()
-        return self.loop
+            self._loop = self.get_loop()
+        return self._loop
         
     def get_background(self):
 
@@ -169,7 +173,7 @@ class BOMRadarLoop(Camera):
             url = self.get_url(suffix)
             image = self.get_image(url)
             if image is not None:
-                background = Image.alpha_composite(background, image)
+                background = self._image.alpha_composite(background, image)
         return background
 
     def get_frames(self):
@@ -198,7 +202,7 @@ class BOMRadarLoop(Camera):
         background = self.get_background()
         if background is None:
             return None
-        fn_composite = lambda x: Image.alpha_composite(background, x)
+        fn_composite = lambda x: self._image.alpha_composite(background, x)
         composites = pool1.map(fn_composite, wximages)
         legend = self.get_legend()
         if legend is None:
@@ -217,7 +221,9 @@ class BOMRadarLoop(Camera):
         log('Getting image %s' % url)
         response = requests.get(url)
         if response.status_code == 200:
-            return Image.open(io.BytesIO(response.content)).convert('RGBA')
+#             return self._image.open(io.BytesIO(response.content)).convert('RGBA')
+            img = self._image.open(io.BytesIO(response.content))
+            return img.convert('RGBA')
         return None
 
     def get_legend(self):
@@ -259,7 +265,7 @@ class BOMRadarLoop(Camera):
             )
         except:
             log('Got NO frames for %s at %s' % (self._location, self._t0))
-            Image.new('RGB', (340, 370)).save(loop, format='GIF')
+            self._image.new('RGB', (340, 370)).save(loop, format='GIF')
         return loop.getvalue()
 
     def get_time_strs(self):

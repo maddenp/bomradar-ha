@@ -103,8 +103,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def log(msg):
-#     _LOGGER.debug(msg)
-    _LOGGER.info(msg)
+    _LOGGER.debug(msg)
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
@@ -127,7 +126,7 @@ class BOMRadarLoop(Camera):
 
     def __init__(self, hass, location, delta, frames, radar_id, name):
 
-        from PIL import Image
+        import PIL.Image
 
         super().__init__()
 
@@ -138,7 +137,7 @@ class BOMRadarLoop(Camera):
         self._radar_id = radar_id
         self._name = name
 
-        self._image = Image
+        self._pilimg = PIL.Image
         self._loop = None
         self._t0 = 0
 
@@ -173,7 +172,7 @@ class BOMRadarLoop(Camera):
             url = self.get_url(suffix)
             image = self.get_image(url)
             if image is not None:
-                background = self._image.alpha_composite(background, image)
+                background = self._pilimg.alpha_composite(background, image)
         return background
 
     def get_frames(self):
@@ -202,7 +201,7 @@ class BOMRadarLoop(Camera):
         background = self.get_background()
         if background is None:
             return None
-        fn_composite = lambda x: self._image.alpha_composite(background, x)
+        fn_composite = lambda x: self._pilimg.alpha_composite(background, x)
         composites = pool1.map(fn_composite, wximages)
         legend = self.get_legend()
         if legend is None:
@@ -221,9 +220,8 @@ class BOMRadarLoop(Camera):
         log('Getting image %s' % url)
         response = requests.get(url)
         if response.status_code == 200:
-#             return self._image.open(io.BytesIO(response.content)).convert('RGBA')
-            img = self._image.open(io.BytesIO(response.content))
-            return img.convert('RGBA')
+            image = self._pilimg.open(io.BytesIO(response.content))
+            return image.convert('RGBA')
         return None
 
     def get_legend(self):
@@ -265,7 +263,7 @@ class BOMRadarLoop(Camera):
             )
         except:
             log('Got NO frames for %s at %s' % (self._location, self._t0))
-            self._image.new('RGB', (340, 370)).save(loop, format='GIF')
+            self._pilimg.new('RGB', (340, 370)).save(loop, format='GIF')
         return loop.getvalue()
 
     def get_time_strs(self):

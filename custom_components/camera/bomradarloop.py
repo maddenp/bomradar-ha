@@ -1,5 +1,4 @@
 import datetime as dt
-import functools
 import io
 import logging
 import multiprocessing.dummy
@@ -7,14 +6,10 @@ import time
 
 from homeassistant.components.camera import PLATFORM_SCHEMA, Camera
 from homeassistant.helpers import config_validation as cv
-from PIL import Image
-from voluptuous import All, In, Optional, Required
+from voluptuous import All, In, Invalid, Optional
 import requests
 
-_LOGGER = logging.getLogger(__name__)
-
-CONF_LOC = 'location'
-CONF_NAME = 'name'
+REQUIREMENTS = ['Pillow==5.4.1']
 
 radars = {
     'Adelaide':        {'id': '643', 'delta': 360, 'frames': 6},
@@ -77,14 +72,34 @@ radars = {
 
 LOCS = sorted(radars.keys())
 
-ERRMSG = "Set 'location' to one of: %s" % ', '.join(LOCS)
+CONF_DELTA = 'delta'
+CONF_FRAMES = 'frames'
+CONF_ID = 'id'
+CONF_LOC = 'location'
+CONF_NAME = 'name'
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    Required(CONF_LOC): All(In(LOCS), msg=ERRMSG),
+BADLOC = "Set 'location' to one of: %s" % ', '.join(LOCS)
+
+def validate_schema(cfg):
+    msg0 = "Specify either 'id' or 'location', not both"
+    msg1 = "Specify 'id', 'delta' and 'frames' when 'location' is unspecified"
+    if cfg.get('location'):
+        if cfg.get('id'):
+            raise Invalid(msg0)
+    else:
+        if not all([cfg.get('id'), cfg.get('delta'), cfg.get('frames')]):
+            raise Invalid(msg1)
+    return cfg
+
+PLATFORM_SCHEMA = All(PLATFORM_SCHEMA.extend({
+    Optional(CONF_LOC): All(In(LOCS), msg=BADLOC),
+    Optional(CONF_DELTA): cv.positive_int,
+    Optional(CONF_FRAMES): cv.positive_int,
+    Optional(CONF_ID): cv.positive_int,
     Optional(CONF_NAME): cv.string,
-})
+}), validate_schema)
 
-REQUIREMENTS = ['Pillow==5.4.1']
+_LOGGER = logging.getLogger(__name__)
 
 
 def log(msg):
@@ -93,60 +108,74 @@ def log(msg):
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     location = config.get(CONF_LOC)
+    if location:
+        radar_id = radars[location]['id']
+        delta = config.get(CONF_DELTA) or radars[location]['delta']
+        frames = config.get(CONF_FRAMES) or radars[location]['frames']
+    else:
+        radar_id = config.get(CONF_ID)
+        delta = config.get(CONF_DELTA)
+        frames = config.get(CONF_FRAMES)
+        location = 'ID %s' % radar_id
     name = config.get(CONF_NAME) or 'BOM Radar Loop - %s' % location
-    bomradarloop = BOMRadarLoop(hass, location, name)
+    bomradarloop = BOMRadarLoop(hass, location, delta, frames, radar_id, name)
     add_devices([bomradarloop])
 
 
 class BOMRadarLoop(Camera):
 
-    def __init__(self, hass, location, name):
+    def __init__(self, hass, location, delta, frames, radar_id, name):
+
+        import PIL.Image
+
         super().__init__()
+
         self.hass = hass
         self._location = location
+        self._delta = delta
+        self._frames = frames
+        self._radar_id = radar_id
         self._name = name
-        self.camera_image()
 
-    def __hash__(self):
-        return 1
+        self._pilimg = PIL.Image
+        self._loop = None
+        self._t0 = 0
 
     def camera_image(self):
         now = int(time.time())
-        delta = radars[self._location]['delta']
-        start = now - (now % delta)
-        return self.get_loop(start)
+        t1 = now - (now % self._delta)
+        if t1 > self._t0:
+            self._t0 = t1
+            self._loop = self.get_loop()
+        return self._loop
         
-    @functools.lru_cache(maxsize=1)
-    def get_background(self, start):
+    def get_background(self):
 
         '''
         Fetch the background map, then the topography, locations (e.g. city
         names), and distance-from-radar range markings, and merge into a single
-        image. Cache one image per location, but also consider the 'start'
-        value when caching so that bad background images (e.g. with one or more
-        missing layers) will be replaced in the next interval.
+        image.
         '''
 
-        log('Getting background for %s at %s' % (self._location, start))
-        radar_id = radars[self._location]['id']
+        log('Getting background for %s at %s' % (self._location, self._t0))
         suffix = 'products/radar_transparencies/IDR%s.background.png'
-        url = self.get_url(suffix % radar_id)
+        url = self.get_url(suffix % self._radar_id)
         background = self.get_image(url)
         if background is None:
             return None
         for layer in ('topography', 'locations', 'range'):
-            log('Getting %s for %s at %s' % (layer, self._location, start))
+            log('Getting %s for %s at %s' % (layer, self._location, self._t0))
             suffix = 'products/radar_transparencies/IDR%s.%s.png' % (
-                radar_id,
+                self._radar_id,
                 layer
             )
             url = self.get_url(suffix)
             image = self.get_image(url)
             if image is not None:
-                background = Image.alpha_composite(background, image)
+                background = self._pilimg.alpha_composite(background, image)
         return background
 
-    def get_frames(self, start):
+    def get_frames(self):
 
         '''
         Use a thread pool to fetch a set of current radar images in parallel,
@@ -161,21 +190,20 @@ class BOMRadarLoop(Camera):
         that.
         '''
 
-        log('Getting frames for %s at %s' % (self._location, start))
+        log('Getting frames for %s at %s' % (self._location, self._t0))
         fn_get = lambda time_str: self.get_wximg(time_str)
-        frames = radars[self._location]['frames']
-        pool0 = multiprocessing.dummy.Pool(frames)
-        raw = pool0.map(fn_get, self.get_time_strs(start))
+        pool0 = multiprocessing.dummy.Pool(self._frames)
+        raw = pool0.map(fn_get, self.get_time_strs())
         wximages = [x for x in raw if x is not None]
         if not wximages:
             return None
         pool1 = multiprocessing.dummy.Pool(len(wximages))
-        background = self.get_background(start)
+        background = self.get_background()
         if background is None:
             return None
-        fn_composite = lambda x: Image.alpha_composite(background, x)
+        fn_composite = lambda x: self._pilimg.alpha_composite(background, x)
         composites = pool1.map(fn_composite, wximages)
-        legend = self.get_legend(start)
+        legend = self.get_legend()
         if legend is None:
             return None
         loop_frames = pool1.map(lambda _: legend.copy(), composites)
@@ -192,41 +220,38 @@ class BOMRadarLoop(Camera):
         log('Getting image %s' % url)
         response = requests.get(url)
         if response.status_code == 200:
-            return Image.open(io.BytesIO(response.content)).convert('RGBA')
+            image = self._pilimg.open(io.BytesIO(response.content))
+            return image.convert('RGBA')
         return None
 
-    @functools.lru_cache(maxsize=1)
-    def get_legend(self, start):
+    def get_legend(self):
 
         '''
-        Fetch the BOM colorbar legend image. See comment in get_background()
-        in re: caching.
+        Fetch the BOM colorbar legend image.
         '''
 
-        log('Getting legend at %s' % start)
+        log('Getting legend at %s' % self._t0)
         url = self.get_url('products/radar_transparencies/IDR.legend.0.png')
         return self.get_image(url)
 
-    @functools.lru_cache(maxsize=1)
-    def get_loop(self, start):
+    def get_loop(self):
 
         '''
         Return an animated GIF comprising a set of frames, where each frame
         includes a background, one or more supplemental layers, a colorbar
-        legend, and a radar image. See comment in get_background() in re:
-        caching.
+        legend, and a radar image.
         '''
 
-        log('Getting loop for %s at %s' % (self._location, start))
+        log('Getting loop for %s at %s' % (self._location, self._t0))
         loop = io.BytesIO()
         try:
-            frames = self.get_frames(start)
+            frames = self.get_frames()
             if frames is None:
                 raise
             log('Got %s frames for %s at %s' % (
                 len(frames),
                 self._location,
-                start
+                self._t0
             ))
             frames[0].save(
                 loop,
@@ -237,23 +262,25 @@ class BOMRadarLoop(Camera):
                 save_all=True,
             )
         except:
-            log('Got NO frames for %s at %s' % (self._location, start))
-            Image.new('RGB', (340, 370)).save(loop, format='GIF')
+            log('Got NO frames for %s at %s' % (self._location, self._t0))
+            self._pilimg.new('RGB', (340, 370)).save(loop, format='GIF')
         return loop.getvalue()
 
-    def get_time_strs(self, start):
+    def get_time_strs(self):
 
         '''
         Return a list of strings representing YYYYMMDDHHMM times for the most
         recent set of radar images to be used to create the animated GIF.
         '''
 
-        log('Getting time strings starting at %s' % start)
-        delta = radars[self._location]['delta']
+        log('Getting time strings starting at %s' % self._t0)
         tz = dt.timezone.utc
-        mkdt = lambda n: dt.datetime.fromtimestamp(start - (delta * n), tz=tz)
-        frames = radars[self._location]['frames']
-        return [mkdt(n).strftime('%Y%m%d%H%M') for n in range(frames, 0, -1)]
+        mkdt = lambda n: dt.datetime.fromtimestamp(
+            self._t0 - (self._delta * n),
+            tz=tz
+        )
+        ns = range(self._frames, 0, -1)
+        return [mkdt(n).strftime('%Y%m%d%H%M') for n in ns]
 
     def get_url(self, path):
 
@@ -264,7 +291,6 @@ class BOMRadarLoop(Camera):
         log('Getting URL for path %s' % path)
         return 'http://www.bom.gov.au/%s' % path
 
-    @functools.lru_cache(maxsize=max(x['frames'] for x in radars.values()))
     def get_wximg(self, time_str):
 
         '''
@@ -274,8 +300,9 @@ class BOMRadarLoop(Camera):
         '''
 
         log('Getting radar imagery for %s at %s' % (self._location, time_str))
-        radar_id = radars[self._location]['id']
-        url = self.get_url('/radar/IDR%s.T.%s.png' % (radar_id, time_str))
+        url = self.get_url(
+            '/radar/IDR%s.T.%s.png' % (self._radar_id, time_str)
+        )
         return self.get_image(url)
 
     @property

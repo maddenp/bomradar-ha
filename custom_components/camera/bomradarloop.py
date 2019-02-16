@@ -73,6 +73,7 @@ radars = {
 LOCS = sorted(radars.keys())
 
 CONF_DELTA = 'delta'
+CONF_OUTFN = 'filename'
 CONF_FRAMES = 'frames'
 CONF_ID = 'id'
 CONF_LOC = 'location'
@@ -92,10 +93,11 @@ def validate_schema(cfg):
     return cfg
 
 PLATFORM_SCHEMA = All(PLATFORM_SCHEMA.extend({
-    Optional(CONF_LOC): All(In(LOCS), msg=BADLOC),
     Optional(CONF_DELTA): cv.positive_int,
+    Optional(CONF_OUTFN): cv.string,
     Optional(CONF_FRAMES): cv.positive_int,
     Optional(CONF_ID): cv.positive_int,
+    Optional(CONF_LOC): All(In(LOCS), msg=BADLOC),
     Optional(CONF_NAME): cv.string,
 }), validate_schema)
 
@@ -118,13 +120,14 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         frames = config.get(CONF_FRAMES)
         location = 'ID %s' % radar_id
     name = config.get(CONF_NAME) or 'BOM Radar Loop - %s' % location
-    bomradarloop = BOMRadarLoop(hass, location, delta, frames, radar_id, name)
+    outfn = config.get(CONF_OUTFN)
+    bomradarloop = BOMRadarLoop(hass, location, delta, frames, radar_id, name, outfn)
     add_devices([bomradarloop])
 
 
 class BOMRadarLoop(Camera):
 
-    def __init__(self, hass, location, delta, frames, radar_id, name):
+    def __init__(self, hass, location, delta, frames, radar_id, name, outfn):
 
         import PIL.Image
 
@@ -136,6 +139,7 @@ class BOMRadarLoop(Camera):
         self._frames = frames
         self._radar_id = radar_id
         self._name = name
+        self._outfn = outfn
 
         self._pilimg = PIL.Image
         self._loop = None
@@ -264,6 +268,9 @@ class BOMRadarLoop(Camera):
         except:
             log('Got NO frames for %s at %s' % (self._location, self._t0))
             self._pilimg.new('RGB', (340, 370)).save(loop, format='GIF')
+        if self._outfn:
+            with open(self._outfn, 'wb') as f:
+                f.write(loop.getvalue())
         return loop.getvalue()
 
     def get_time_strs(self):

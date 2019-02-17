@@ -2,6 +2,7 @@ import datetime as dt
 import io
 import logging
 import multiprocessing.dummy
+import os
 import time
 
 from homeassistant.components.camera import PLATFORM_SCHEMA, Camera
@@ -101,11 +102,15 @@ PLATFORM_SCHEMA = All(PLATFORM_SCHEMA.extend({
     Optional(CONF_NAME): cv.string,
 }), validate_schema)
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 def log(msg):
-    _LOGGER.debug(msg)
+    LOGGER.debug(msg)
+
+
+def log_error(msg):
+    LOGGER.error(msg)
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
@@ -269,8 +274,17 @@ class BOMRadarLoop(Camera):
             log('Got NO frames for %s at %s' % (self._location, self._t0))
             self._pilimg.new('RGB', (340, 370)).save(loop, format='GIF')
         if self._outfn:
-            with open(self._outfn, 'wb') as f:
-                f.write(loop.getvalue())
+            outdir = os.path.dirname(self._outfn)
+            if not os.path.isdir(outdir):
+                try:
+                    os.makedirs(outdir)
+                except:
+                    log_error('Could not create directory %s' % outdir)
+            try:
+                with open(self._outfn, 'wb') as f:
+                    f.write(loop.getvalue())
+            except:
+                log_error('Could not write image to %s' % self._outfn)
         return loop.getvalue()
 
     def get_time_strs(self):

@@ -12,7 +12,14 @@ import requests
 
 REQUIREMENTS = ['Pillow==5.4.1']
 
-radars = {
+CONF_DELTA = 'delta'
+CONF_FRAMES = 'frames'
+CONF_ID = 'id'
+CONF_LOC = 'location'
+CONF_NAME = 'name'
+CONF_OUTFN = 'filename'
+
+RADARS = {
     'Adelaide':        {'id': '643', 'delta': 360, 'frames': 6},
     'Albany':          {'id': '313', 'delta': 600, 'frames': 4},
     'AliceSprings':    {'id': '253', 'delta': 600, 'frames': 4},
@@ -71,16 +78,9 @@ radars = {
     'Yarrawonga':      {'id': '493', 'delta': 360, 'frames': 6},
 }
 
-LOCS = sorted(radars.keys())
-
-CONF_DELTA = 'delta'
-CONF_OUTFN = 'filename'
-CONF_FRAMES = 'frames'
-CONF_ID = 'id'
-CONF_LOC = 'location'
-CONF_NAME = 'name'
-
-BADLOC = "Set 'location' to one of: %s" % ', '.join(LOCS)
+locs = sorted(RADARS.keys())
+badloc = "Set 'location' to one of: {}".format(', '.join(locs))
+logger = logging.getLogger(__name__)
 
 def validate_schema(cfg):
     msg0 = "Specify either 'id' or 'location', not both"
@@ -98,33 +98,31 @@ PLATFORM_SCHEMA = All(PLATFORM_SCHEMA.extend({
     Optional(CONF_OUTFN): cv.string,
     Optional(CONF_FRAMES): cv.positive_int,
     Optional(CONF_ID): cv.positive_int,
-    Optional(CONF_LOC): All(In(LOCS), msg=BADLOC),
+    Optional(CONF_LOC): All(In(locs), msg=badloc),
     Optional(CONF_NAME): cv.string,
 }), validate_schema)
 
-LOGGER = logging.getLogger(__name__)
-
 
 def log(msg):
-    LOGGER.debug(msg)
+    logger.debug(msg)
 
 
 def log_error(msg):
-    LOGGER.error(msg)
+    logger.error(msg)
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     location = config.get(CONF_LOC)
     if location:
-        radar_id = radars[location]['id']
-        delta = config.get(CONF_DELTA) or radars[location]['delta']
-        frames = config.get(CONF_FRAMES) or radars[location]['frames']
+        radar_id = RADARS[location]['id']
+        delta = config.get(CONF_DELTA) or RADARS[location]['delta']
+        frames = config.get(CONF_FRAMES) or RADARS[location]['frames']
     else:
         radar_id = config.get(CONF_ID)
         delta = config.get(CONF_DELTA)
         frames = config.get(CONF_FRAMES)
-        location = 'ID %s' % radar_id
-    name = config.get(CONF_NAME) or 'BOM Radar Loop - %s' % location
+        location = "ID {}".format(radar_id)
+    name = config.get(CONF_NAME) or "BOM Radar Loop - {}".format(location)
     outfn = config.get(CONF_OUTFN)
     bomradarloop = BOMRadarLoop(hass, location, delta, frames, radar_id, name, outfn)
     add_devices([bomradarloop])
@@ -160,21 +158,21 @@ class BOMRadarLoop(Camera):
         
     def get_background(self):
 
-        '''
+        """
         Fetch the background map, then the topography, locations (e.g. city
         names), and distance-from-radar range markings, and merge into a single
         image.
-        '''
+        """
 
-        log('Getting background for %s at %s' % (self._location, self._t0))
-        suffix = 'products/radar_transparencies/IDR%s.background.png'
-        url = self.get_url(suffix % self._radar_id)
+        log("Getting background for {} at {}".format(self._location, self._t0))
+        suffix = 'products/radar_transparencies/IDR{}.background.png'
+        url = self.get_url(suffix.format(self._radar_id))
         background = self.get_image(url)
         if background is None:
             return None
         for layer in ('topography', 'locations', 'range'):
-            log('Getting %s for %s at %s' % (layer, self._location, self._t0))
-            suffix = 'products/radar_transparencies/IDR%s.%s.png' % (
+            log("Getting {} for {} at {}".format(layer, self._location, self._t0))
+            suffix = 'products/radar_transparencies/IDR{}.{}.png'.format(
                 self._radar_id,
                 layer
             )
@@ -186,7 +184,7 @@ class BOMRadarLoop(Camera):
 
     def get_frames(self):
 
-        '''
+        """
         Use a thread pool to fetch a set of current radar images in parallel,
         then get a background image for this location, combine it with the
         colorbar legend, and finally composite each radar image onto a copy of
@@ -197,9 +195,9 @@ class BOMRadarLoop(Camera):
         effort set of whatever was actually available at request time. If the
         list is empty, None is returned; the caller can decide how to handle
         that.
-        '''
+        """
 
-        log('Getting frames for %s at %s' % (self._location, self._t0))
+        log("Getting frames for {} at {}".format(self._location, self._t0))
         fn_get = lambda time_str: self.get_wximg(time_str)
         pool0 = multiprocessing.dummy.Pool(self._frames)
         raw = pool0.map(fn_get, self.get_time_strs())
@@ -222,11 +220,11 @@ class BOMRadarLoop(Camera):
 
     def get_image(self, url):
 
-        '''
+        """
         Fetch an image from the BOM.
-        '''
+        """
 
-        log('Getting image %s' % url)
+        log("Getting image {}".format(url))
         response = requests.get(url)
         if response.status_code == 200:
             image = self._pilimg.open(io.BytesIO(response.content))
@@ -235,29 +233,29 @@ class BOMRadarLoop(Camera):
 
     def get_legend(self):
 
-        '''
+        """
         Fetch the BOM colorbar legend image.
-        '''
+        """
 
-        log('Getting legend at %s' % self._t0)
+        log("Getting legend at {}".format(self._t0))
         url = self.get_url('products/radar_transparencies/IDR.legend.0.png')
         return self.get_image(url)
 
     def get_loop(self):
 
-        '''
+        """
         Return an animated GIF comprising a set of frames, where each frame
         includes a background, one or more supplemental layers, a colorbar
         legend, and a radar image.
-        '''
+        """
 
-        log('Getting loop for %s at %s' % (self._location, self._t0))
+        log("Getting loop for {} at {}".format(self._location, self._t0))
         loop = io.BytesIO()
         try:
             frames = self.get_frames()
             if frames is None:
                 raise
-            log('Got %s frames for %s at %s' % (
+            log("Got {} frames for {} at {}".format(
                 len(frames),
                 self._location,
                 self._t0
@@ -271,7 +269,7 @@ class BOMRadarLoop(Camera):
                 save_all=True,
             )
         except:
-            log('Got NO frames for %s at %s' % (self._location, self._t0))
+            log("Got NO frames for {} at {}".format(self._location, self._t0))
             self._pilimg.new('RGB', (340, 370)).save(loop, format='GIF')
         if self._outfn:
             outdir = os.path.dirname(self._outfn)
@@ -279,22 +277,22 @@ class BOMRadarLoop(Camera):
                 try:
                     os.makedirs(outdir)
                 except:
-                    log_error('Could not create directory %s' % outdir)
+                    log_error("Could not create directory {}".format(outdir))
             try:
                 with open(self._outfn, 'wb') as f:
                     f.write(loop.getvalue())
             except:
-                log_error('Could not write image to %s' % self._outfn)
+                log_error("Could not write image to {}".format(self._outfn))
         return loop.getvalue()
 
     def get_time_strs(self):
 
-        '''
+        """
         Return a list of strings representing YYYYMMDDHHMM times for the most
         recent set of radar images to be used to create the animated GIF.
-        '''
+        """
 
-        log('Getting time strings starting at %s' % self._t0)
+        log("Getting time strings starting at {}".format(self._t0))
         tz = dt.timezone.utc
         mkdt = lambda n: dt.datetime.fromtimestamp(
             self._t0 - (self._delta * n),
@@ -305,24 +303,24 @@ class BOMRadarLoop(Camera):
 
     def get_url(self, path):
 
-        '''
+        """
         Return a canonical URL for a suffix path on the BOM website.
-        '''
+        """
 
-        log('Getting URL for path %s' % path)
-        return 'http://www.bom.gov.au/%s' % path
+        log("Getting URL for path {}".format(path))
+        return 'http://www.bom.gov.au/{}'.format(path)
 
     def get_wximg(self, time_str):
 
-        '''
+        """
         Return a radar weather image from the BOM website. Note that
         get_image() returns None if the image could not be fetched, so the
         caller must deal with that possibility.
-        '''
+        """
 
-        log('Getting radar imagery for %s at %s' % (self._location, time_str))
+        log("Getting radar imagery for {} at {}".format(self._location, time_str))
         url = self.get_url(
-            '/radar/IDR%s.T.%s.png' % (self._radar_id, time_str)
+            '/radar/IDR{}.T.{}.png'.format(self._radar_id, time_str)
         )
         return self.get_image(url)
 
